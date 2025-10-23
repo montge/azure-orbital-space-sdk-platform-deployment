@@ -170,25 +170,64 @@ public partial class Utils {
             return k8sDeployment;
         }
 
+        /// <summary>
+        /// Validates a Helm parameter key to prevent command injection attacks.
+        /// </summary>
+        /// <param name="key">The Helm parameter key to validate</param>
+        /// <returns>True if the key is valid and safe</returns>
+        private bool IsValidHelmParameter(string key) {
+            return Utils.InputValidation.IsValidHelmParameterKey(key);
+        }
+
+        /// <summary>
+        /// Validates a Helm parameter value to prevent command injection attacks.
+        /// </summary>
+        /// <param name="value">The Helm parameter value to validate</param>
+        /// <returns>True if the value is valid and safe</returns>
+        private bool IsValidHelmValue(string value) {
+            return Utils.InputValidation.IsValidHelmParameterValue(value);
+        }
+
         public string GenerateTemplate(Dictionary<string, string> helmValuesToSet) {
             _logger.LogDebug("Generating template for SpaceFx Chart '{spacefxChart}' with values '{helmValuesToSet}'", _spacefxChart, helmValuesToSet);
             string output = "", error = "";
             int returnCode = 0;
 
-            StringBuilder helmValues = new();
-
+            // SECURITY FIX: Validate all Helm parameters and values before processing
+            // This prevents command injection attacks via malicious parameter keys or values
             foreach (string key in helmValuesToSet.Keys) {
-                helmValues.Append($" --set {key}={helmValuesToSet[key]}");
+                if (!IsValidHelmParameter(key)) {
+                    _logger.LogError("Invalid Helm parameter key detected: '{key}'. Rejecting to prevent command injection.", key);
+                    throw new ArgumentException($"Invalid Helm parameter key: '{key}'. Parameter keys must contain only alphanumeric characters, dots, hyphens, and underscores.");
+                }
+
+                if (!IsValidHelmValue(helmValuesToSet[key])) {
+                    _logger.LogError("Invalid Helm parameter value detected for key '{key}': '{value}'. Rejecting to prevent command injection.", key, helmValuesToSet[key]);
+                    throw new ArgumentException($"Invalid Helm parameter value for key '{key}': '{helmValuesToSet[key]}'. Values must not contain shell metacharacters.");
+                }
             }
 
+            // SECURITY FIX: Use ArgumentList instead of concatenating arguments as a string
+            // This prevents shell interpretation of special characters
             ProcessStartInfo startInfo = new ProcessStartInfo {
                 FileName = _helmApp,
-                Arguments = $"template {_spacefxChart} {helmValues}",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
 
-            _logger.LogDebug("Helm Template Command: '{app} {arguments}'", startInfo.FileName, startInfo.Arguments);
+            // Add the base command and chart path
+            startInfo.ArgumentList.Add("template");
+            startInfo.ArgumentList.Add(_spacefxChart);
+
+            // Add each --set parameter as separate arguments (validated above)
+            foreach (string key in helmValuesToSet.Keys) {
+                startInfo.ArgumentList.Add("--set");
+                startInfo.ArgumentList.Add($"{key}={helmValuesToSet[key]}");
+            }
+
+            // Log the command for debugging (reconstruct for display only)
+            string logCommand = $"{startInfo.FileName} {string.Join(" ", startInfo.ArgumentList)}";
+            _logger.LogDebug("Helm Template Command: '{command}'", logCommand);
 
             using (Process process = new Process { StartInfo = startInfo }) {
                 process.Start();
